@@ -2,8 +2,7 @@
 <html lang="en-us">
 <head>
     <meta charset="utf-8">
-    <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
-    <title>Hollow Knight | High Performance Offline</title>
+    <title>Hollow Knight | Offline</title>
     <style>
         body { margin: 0; background: #000; color: #fff; font-family: sans-serif; overflow: hidden; }
         #unity-container { width: 100vw; height: 100vh; position: relative; }
@@ -14,17 +13,17 @@
             align-items: center; justify-content: center; z-index: 10;
         }
         #progress-bar-empty { width: 300px; height: 18px; background: #222; border-radius: 10px; border: 1px solid #444; margin-top: 20px; overflow: hidden; }
-        #progress-bar-full { width: 0%; height: 100%; background: #fff; transition: width 0.2s; }
-        #status-text { margin-top: 10px; font-size: 14px; color: #888; text-transform: uppercase; letter-spacing: 1px; }
+        #progress-bar-full { width: 0%; height: 100%; background: #fff; transition: width 0.1s; }
+        #status-text { margin-top: 10px; font-size: 14px; color: #888; text-transform: uppercase; }
     </style>
 </head>
 <body>
     <div id="unity-container">
         <canvas id="unity-canvas"></canvas>
         <div id="loading-overlay">
-            <div id="loading-title" style="font-size: 24px;">truffled.lol</div>
+            <div id="loading-title" style="font-size: 24px;">Hollow Knight</div>
             <div id="progress-bar-empty"><div id="progress-bar-full"></div></div>
-            <div id="status-text">Initializing Service Worker...</div>
+            <div id="status-text">Waking up Service Worker...</div>
         </div>
     </div>
 
@@ -34,71 +33,57 @@
         const statusText = document.querySelector("#status-text");
         const overlay = document.querySelector("#loading-overlay");
 
-        // --- UPDATED CONFIGURATION ---
         const CONFIG = {
-            dataParts: 45, // part00 to part44
-            wasmParts: 2,  // part00 to part01
+            dataParts: 45, // 00 to 44
+            wasmParts: 2,  // 00 to 01
             prefix: "hktruffled",
             buildUrl: "Build"
         };
 
-        async function setupServiceWorker() {
-            if (!('serviceWorker' in navigator)) return;
-            const reg = await navigator.serviceWorker.register('./sw.js');
-            await navigator.serviceWorker.ready;
-            if (!navigator.serviceWorker.controller) {
-                window.location.reload();
-            }
-        }
-
         async function fetchBinary(type, total) {
-            console.time(`Fetch ${type}`);
-            statusText.textContent = `Pumping ${type} from cache...`;
-            
             const blobs = [];
             for (let i = 0; i < total; i++) {
                 const partId = i.toString().padStart(2, '0');
-                const url = `${CONFIG.buildUrl}/${CONFIG.prefix}.${type}.part${partId}`;
+                const url = `./${CONFIG.buildUrl}/${CONFIG.prefix}.${type}.part${partId}`;
                 
-                try {
-                    const resp = await fetch(url);
-                    if (!resp.ok) {
-                        console.warn(`Reached end of parts at ${partId}`);
-                        break; 
-                    }
-                    blobs.push(await resp.blob());
-                    // Update UI for each chunk
-                    const subProgress = Math.round((i / total) * 100);
-                    statusText.textContent = `Streaming ${type}: ${subProgress}%`;
-                } catch (e) {
-                    console.error(`Error fetching ${url}:`, e);
-                    break;
-                }
+                const resp = await fetch(url);
+                if (!resp.ok) break;
+                
+                blobs.push(await resp.blob());
+                statusText.textContent = `Loading ${type}: ${Math.round((i/total)*100)}%`;
+                progressBarFull.style.width = Math.round(((i/total)*50)) + (type === "data" ? 50 : 0) + "%";
             }
-
-            const finalBlob = new Blob(blobs);
-            const url = URL.createObjectURL(finalBlob);
-            
-            console.timeEnd(`Fetch ${type}`);
-            return url;
+            return URL.createObjectURL(new Blob(blobs));
         }
 
-        async function loadGame() {
-            try {
-                await setupServiceWorker();
+        async function init() {
+            if (!('serviceWorker' in navigator)) {
+                statusText.textContent = "Browser too old for offline mode.";
+                return;
+            }
 
-                // Sequential binary fetch to prevent "Backpressure" freezes
+            try {
+                // Wait for SW to be ready
+                const reg = await navigator.serviceWorker.register('./sw.js');
+                await navigator.serviceWorker.ready;
+                
+                // If it's the first visit, we might need to reload once SW takes control
+                if (!navigator.serviceWorker.controller) {
+                    window.location.reload();
+                    return;
+                }
+
                 const wasmUrl = await fetchBinary("wasm", CONFIG.wasmParts);
                 const dataUrl = await fetchBinary("data", CONFIG.dataParts);
 
-                statusText.textContent = "Compiling WebAssembly...";
+                statusText.textContent = "Starting Unity Engine...";
                 
                 const script = document.createElement("script");
-                script.src = `${CONFIG.buildUrl}/${CONFIG.prefix}.loader.js`;
+                script.src = `./${CONFIG.buildUrl}/${CONFIG.prefix}.loader.js`;
                 script.onload = () => {
                     createUnityInstance(canvas, {
                         dataUrl: dataUrl,
-                        frameworkUrl: `${CONFIG.buildUrl}/${CONFIG.prefix}.framework.js`,
+                        frameworkUrl: `./${CONFIG.buildUrl}/${CONFIG.prefix}.framework.js`,
                         codeUrl: wasmUrl,
                         streamingAssetsUrl: "StreamingAssets",
                         companyName: "Team Cherry",
@@ -106,23 +91,20 @@
                         productVersion: "1.0",
                         dataCaching: false, 
                     }, (progress) => {
-                        progressBarFull.style.width = (progress * 100) + "%";
-                        statusText.textContent = `Starting Engine: ${Math.round(progress * 100)}%`;
+                        // Unity's internal progress
+                        statusText.textContent = `Starting engine: ${Math.round(progress * 100)}%`;
                     }).then(() => {
                         overlay.style.display = "none";
-                        // Note: Don't revoke immediately if Unity needs to re-read later
-                        // URL.revokeObjectURL(dataUrl); 
                     }).catch(alert);
                 };
                 document.body.appendChild(script);
 
             } catch (err) {
-                statusText.textContent = "Error: " + err.message;
-                console.error(err);
+                statusText.textContent = "Offline error: " + err.message;
             }
         }
 
-        loadGame();
+        init();
     </script>
 </body>
 </html>
